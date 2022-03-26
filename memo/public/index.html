@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#000000" />
+    <meta
+      name="description"
+      content="Creating an inflation-proof store of value"
+    />
+    <link rel="apple-touch-icon" href="%PUBLIC_URL%/logo192.png" />
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.7.4/dist/tf.min.js"></script>
+    <!--
+      manifest.json provides metadata used when your web app is installed on a
+      user's mobile device or desktop. See https://developers.google.com/web/fundamentals/web-app-manifest/
+    -->
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <!--
+      Notice the use of %PUBLIC_URL% in the tags above.
+      It will be replaced with the URL of the `public` folder during the build.
+      Only files inside the `public` folder can be referenced from the HTML.
+
+      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
+      work correctly both with client-side routing and a non-root public URL.
+      Learn how to configure a non-root public URL by running `npm run build`.
+    -->
+    <title>Memento</title>
+    <style>
+      .highlight {
+          background-color: #51cb20;
+      }
+  </style>
+  </head>
+  <body>
+    <noscript>You need to enable JavaScript to run this app.</noscript>
+    <div id="root"></div>
+    
+    <!--
+      This HTML file is a template.
+      If you open it directly in the browser, you will see an empty page.
+
+      You can add webfonts, meta tags, or analytics to this file.
+      The build step will place the bundled scripts into the <body> tag.
+
+      To begin the development, run `npm start` or `yarn start`.
+      To create a production bundle, use `npm run build` or `yarn build`.
+    -->
+    <!-- <div id="dropArea">
+      <input type="file" id="imageLoader" accept="image/*" /><br />
+      <p id="welcome">Choose (or drag&drop) a photo you wish to RGB-Depthify.</p>
+      <p id="running" style="display: none;">Running. Please wait.</p>
+      <canvas id="resultCanvas" style="max-width: 50%; max-height: 50%;"></canvas>
+  </div> -->
+  <div id="dropArea" style="display: none;">
+    <input type="file" id="imageLoader" accept="image/*" /><br />
+    <p id="welcome">Choose (or drag&drop) a photo you wish to RGB-Depthify.</p>
+    <p id="running" style="display: none;">Running. Please wait.</p>
+    <canvas id="resultCanvas" style="max-width: 50%; max-height: 50%;"></canvas>
+</div>
+  </body>
+  <script>
+    window.onload = () => {
+        let dropArea = document.getElementById("dropArea");
+    dropArea.addEventListener("drop", runInference, false);
+    document.getElementById("imageLoader").addEventListener("change", switchDisplay, false);
+    
+    ["dragenter", "dragover", "dragleave", "drop"].forEach((eventName) => {
+        dropArea.addEventListener(eventName, preventDefaults, false);
+    });
+    ["dragenter", "dragover"].forEach((eventName) => {
+        dropArea.addEventListener(eventName, highlight, false);
+    });
+    ["dragleave", "drop"].forEach((eventName) => {
+        dropArea.addEventListener(eventName, unhighlight, false);
+    });
+    
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+
+    function highlight(e) {
+        dropArea.classList.add("highlight");
+    }
+
+    function unhighlight(e) {
+        dropArea.classList.remove("highlight");
+    }
+    
+    function switchDisplay(e){
+        document.getElementById("welcome").style.display = "none";
+        document.getElementById("running").style.display = "block";
+        setTimeout(function () {
+            runInference(e);
+        }, 350);
+        
+    }
+
+
+
+    let dropName;
+
+    if (!("createImageBitmap" in window)) {
+        window.createImageBitmap = async function (data) {
+            return new Promise((resolve, reject) => {
+                let dataURL;
+                const canvas = document.createElement("canvas");
+                const ctx = canvas.getContext("2d");
+                canvas.width = data.width;
+                canvas.height = data.height;
+                ctx.putImageData(data, 0, 0);
+                dataURL = canvas.toDataURL();
+
+                const img = document.createElement("img");
+                img.addEventListener("load", function () {
+                    resolve(this);
+                });
+                img.src = dataURL;
+            });
+        };
+    }
+
+    class Pydnet {
+        async init(urls) {
+            const MODEL = "https://raw.githubusercontent.com/FilippoAleotti/demo_live/master/assets/js/pydnet.json";
+            this.model = await tf.loadGraphModel(MODEL);
+            this.height = 384;
+            this.width = 640;
+            return this;
+        }
+
+        async predict(img) {
+            const [data, resizeInputData] = tf.tidy(() => {
+                var raw_input = tf.browser.fromPixels(img);
+                var upsampledraw_input = tf.image.resizeBilinear(raw_input, [this.height, this.width]);
+                var preprocessedInput = upsampledraw_input.expandDims();
+                preprocessedInput = tf.div(preprocessedInput, 255.0);
+                var result = this.model.predict(preprocessedInput);
+                result = this.prepareOutput(result, img.width, img.height);
+                upsampledraw_input = tf.cast(upsampledraw_input, "int32");
+                const data = result.dataSync();
+                const resizeInputData = upsampledraw_input.dataSync();
+                return [data, resizeInputData];
+            });
+            await tf.nextFrame();
+            return [data, resizeInputData];
+        }
+
+        prepareOutput(tensor, width, height) {
+            return tf.tidy(() => {
+                tensor = tf.relu(tensor);
+                tensor = tf.squeeze(tensor);
+                var min_value = tf.min(tensor);
+                var max_value = tf.max(tensor);
+                tensor = tf.div(tf.sub(tensor, min_value), tf.sub(max_value, min_value));
+                tensor = tf.mul(tensor, 255.0);
+                tensor = tf.cast(tensor, "int32");
+                return tensor;
+            });
+        }
+    }
+
+    async function runInference(e) {
+        document.getElementById("welcome").style.display = "none";
+        document.getElementById("running").style.display = "block";
+
+        var fr = new FileReader();
+        fr.onload = function () {
+            var img = new Image();
+            img.onload = function () {
+                display_result(img);
+            };
+            img.src = fr.result;
+        };
+        try {
+            fr.readAsDataURL(e.target.files[0]);
+        } catch (x) {
+            dropName = e.dataTransfer.files[0].name;
+            fr.readAsDataURL(e.dataTransfer.files[0]);
+        }
+    }
+
+    async function run_inference(img) {
+        var outputs = await model.predict(img);
+        return outputs;
+    }
+
+    async function display_result(img) {
+        var results = await run_inference(img);
+
+        var canvas = document.getElementById("resultCanvas");
+        var ctx = canvas.getContext("2d");
+        canvas.width = img.width * 2;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+
+        var buffer = new Uint8ClampedArray(model.width * model.height * 4);
+        var i = 0;
+        for (var y = 0; y < model.height; y++) {
+            for (var x = 0; x < model.width; x++) {
+                var index = y * model.width + x;
+                var depth = results[0][index];
+                buffer[i] = results[0][index];
+                buffer[i + 1] = results[0][index];
+                buffer[i + 2] = results[0][index];
+                buffer[i + 3] = 255.0;
+                i += 4;
+            }
+        }
+
+        const imageData = new ImageData(buffer, model.width, model.height);
+        createImageBitmap(imageData).then((renderer) => ctx.drawImage(renderer, img.width, 0, img.width, img.height));
+
+        document.getElementById("welcome").style.display = "block";
+        document.getElementById("running").style.display = "none";
+
+        setTimeout(function () {
+
+            function dataURItoBlob(dataURI) {
+                // convert base64/URLEncoded data component to raw binary data held in a string
+                var byteString;
+                if (dataURI.split(',')[0].indexOf('base64') >= 0)
+                    byteString = atob(dataURI.split(',')[1]);
+                else
+                    byteString = unescape(dataURI.split(',')[1]);
+
+                // separate out the mime component
+                var mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
+
+                // write the bytes of the string to a typed array
+                var ia = new Uint8Array(byteString.length);
+                for (var i = 0; i < byteString.length; i++) {
+                    ia[i] = byteString.charCodeAt(i);
+                }
+
+                return new Blob([ia], {type:mimeString});
+            }
+
+            try {
+                var ulName = document.getElementById("imageLoader").files.item(0).name;
+                var dlName = ulName.substr(0, ulName.lastIndexOf(".")) + "_RGBD.jpg";
+            } catch (x) {
+                var dlName = dropName.substr(0, dropName.lastIndexOf(".")) + "_RGBD.jpg";
+            }
+
+            var dlLink = document.createElement("a");
+            dlLink.download = dlName;
+            const imgData = canvas.toDataURL("image/jpeg");
+            const file = dataURItoBlob(imgData)
+            console.log(222, imgData)
+            const formData = new FormData()
+            formData.append("file", file)
+            const config = {
+              headers: {
+                  'content-type': 'multipart/form-data'
+              }
+            }
+            fetch("https://memento-hack-mit.herokuapp.com/upload_depth_file", {
+                    method: "POST",
+                    headers: config,
+                    body: formData
+            }).then((response) => {
+                // alert('depth image generated!')
+            })
+        }, 350);
+    }
+
+    async function setupPydnet() {
+        model = await new Pydnet().init();
+    }
+
+    setupPydnet();
+    }
+</script>
+</html>
